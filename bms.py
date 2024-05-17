@@ -1,6 +1,4 @@
 
-
-import paho.mqtt.client as mqtt
 import socket
 import time
 import yaml
@@ -16,6 +14,7 @@ import constants
 print("Starting up...")
 
 config = {}
+script_version = ""
 
 if os.path.exists('/data/options.json'):
     print("Loading options.json")
@@ -31,14 +30,11 @@ elif os.path.exists('config.yaml'):
 else:
     sys.exit("No config file found")  
 
-
 scan_interval = config['scan_interval']
 connection_type = config['connection_type']
 bms_serial = config['bms_serial']
-ha_discovery_enabled = config['mqtt_ha_discovery']
 code_running = True
 bms_connected = False
-mqtt_connected = False
 print_initial = True
 debug_output = config['debug_output']
 disc_payload = {}
@@ -53,35 +49,6 @@ temps = 6
 
 
 print("Connection Type: " + connection_type)
-
-def on_connect(client, userdata, flags, rc):
-    print("MQTT connected with result code "+str(rc))
-    client.will_set(config['mqtt_base_topic'] + "/availability","offline", qos=0, retain=False)
-    global mqtt_connected
-    mqtt_connected = True
-
-def on_disconnect(client, userdata, rc):
-    print("MQTT disconnected with result code "+str(rc))
-    global mqtt_connected
-    mqtt_connected = False
-
-
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_disconnect = on_disconnect
-#client.on_message = on_message
-
-client.username_pw_set(username=config['mqtt_user'], password=config['mqtt_password'])
-client.connect(config['mqtt_host'], config['mqtt_port'], 60)
-client.loop_start()
-time.sleep(2)
-
-def exit_handler():
-    print("Script exiting")
-    client.publish(config['mqtt_base_topic'] + "/availability","offline")
-    return
-
-atexit.register(exit_handler)
 
 def bms_connect(address, port):
 
@@ -140,7 +107,11 @@ def bms_get_data(comms):
         if connection_type == "Serial":
             inc_data = comms.readline()
         else:
-            temp = comms.recv(4096)
+            temp = bytes()
+            
+            while len(temp) == 0 or temp[-1] != 13:
+                temp = temp + comms.recv(4096)
+
             temp2 = temp.split(b'\r')
             # Decide which one to take:
             for element in range(0,len(temp2)):
@@ -152,245 +123,12 @@ def bms_get_data(comms):
             if (len(temp2) > 2) & (debug_output > 0):
                 print("Multiple EOIs detected")
                 print("...for incoming data: " + str(temp) + " |Hex: " + str(temp.hex(' ')))
+                
         return inc_data
     except Exception as e:
         print("BMS socket receive error: %s" % e)
         # global bms_connected
         return False
-
-def ha_discovery():
-
-    global ha_discovery_enabled
-    global packs
-
-    if ha_discovery_enabled:
-        
-        print("Publishing HA Discovery topic...")
-
-        disc_payload['availability_topic'] = config['mqtt_base_topic'] + "/availability"
-
-        device = {}
-        device['manufacturer'] = "BMS Pace"
-        device['model'] = "AM-x"
-        device['identifiers'] = "bmspace_" + bms_sn
-        device['name'] = "Generic Lithium"
-        device['sw_version'] = bms_version
-        disc_payload['device'] = device
-
-        for p in range (1,packs+1):
-
-            for i in range(0,cells):
-                disc_payload['name'] = "Pack " + str(p) + " Cell " + str(i+1) + " Voltage"
-                disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_v_cell_" + str(i+1)
-                disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/v_cells/cell_" + str(i+1)
-                disc_payload['unit_of_measurement'] = "mV"
-                client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            for i in range(0,temps):
-                disc_payload['name'] = "Pack " + str(p) + " Temperature " + str(i+1)
-                disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_temp_" + str(i+1)
-                disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/temps/temp_" + str(i+1)
-                disc_payload['unit_of_measurement'] = "°C"
-                client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            # disc_payload['name'] = "MOS_Temp"
-            # disc_payload['unique_id'] = "bmspace_" + bms_sn + "_t_mos"
-            # disc_payload['state_topic'] = config['mqtt_base_topic'] + "/t_mos"
-            # disc_payload['unit_of_measurement'] = "°C"
-            # client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'] + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            # disc_payload['name'] = "Environmental_Temp"
-            # disc_payload['unique_id'] = "bmspace_" + bms_sn + "_t_env"
-            # disc_payload['state_topic'] = config['mqtt_base_topic'] + "/t_env"
-            # disc_payload['unit_of_measurement'] = "°C"
-            # client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'] + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Current"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_i_pack"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_pack"
-            disc_payload['unit_of_measurement'] = "A"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Voltage"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_v_pack"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/v_pack"
-            disc_payload['unit_of_measurement'] = "V"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Remaining Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_i_remain_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_remain_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " State of Health"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_soh"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/soh"
-            disc_payload['unit_of_measurement'] = "%"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Cycles"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_cycles"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/cycles"
-            disc_payload['unit_of_measurement'] = ""
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Full Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_i_full_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_full_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Design Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_i_design_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_design_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " State of Charge"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_soc"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/soc"
-            disc_payload['unit_of_measurement'] = "%"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " State of Health"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_soh"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/soh"
-            disc_payload['unit_of_measurement'] = "%"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-
-            disc_payload.pop('unit_of_measurement')
-
-            disc_payload['name'] = "Pack " + str(p) + " Warnings"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_warnings"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/warnings"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Balancing1"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_balancing1"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/balancing1"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Balancing2"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_balancing2"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/balancing2"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-
-            # Binary Sensors
-            disc_payload['name'] = "Pack " + str(p) + " Protection Short Circuit"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_prot_short_circuit"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_short_circuit"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Protection Discharge Current"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_prot_discharge_current"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_discharge_current"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Protection Charge Current"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_prot_charge_current"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_charge_current"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Current Limit"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_current_limit"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/current_limit"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Charge FET"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_charge_fet"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/charge_fet"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Discharge FET"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_discharge_fet"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/discharge_fet"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Pack Indicate"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_pack_indicate"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/pack_indicate"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Reverse"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_reverse"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/reverse"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " AC In"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_ac_in"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/ac_in"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Heart"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_heart"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/heart"
-            disc_payload['payload_on'] = "1"
-            disc_payload['payload_off'] = "0"
-            client.publish(config['mqtt_ha_discovery_topic']+"/binary_sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack " + str(p) + " Cell Max Volt Diff"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_" + str(p) + "_cells_max_diff_calc"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_" + str(p) + "/cells_max_diff_calc"
-            disc_payload['unit_of_measurement'] = "mV"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            # Pack data
-            disc_payload.pop('payload_on')
-            disc_payload.pop('payload_off')
-
-            disc_payload['name'] = "Pack Remaining Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_i_remain_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_remain_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack Full Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_i_full_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_full_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack Design Capacity"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_i_design_cap"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_design_cap"
-            disc_payload['unit_of_measurement'] = "mAh"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack State of Charge"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_soc"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_soc"
-            disc_payload['unit_of_measurement'] = "%"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-            disc_payload['name'] = "Pack State of Health"
-            disc_payload['unique_id'] = "bmspace_" + bms_sn + "_pack_soh"
-            disc_payload['state_topic'] = config['mqtt_base_topic'] + "/pack_soh"
-            disc_payload['unit_of_measurement'] = "%"
-            client.publish(config['mqtt_ha_discovery_topic']+"/sensor/BMS-" + bms_sn + "/" + disc_payload['name'].replace(' ', '_') + "/config",json.dumps(disc_payload),qos=0, retain=True)
-
-    else:
-        print("HA Discovery Disabled")
 
 def chksum_calc(data):
 
@@ -451,8 +189,8 @@ def bms_parse_data(inc_data):
 
     global debug_output
 
-    #inc_data = b'~2501460070DC00020D100A0FF40FEA100E10040FF50FFD10010FFD0FE50FF5100A1001060BD20BD20BD40BD40BF80C1AFF7ECFCF258B02271001372710600D0FFA0FFC0FFB0FFC0FFE0FFB0FFA0FFA0FFB0FFD0FFC0FFB0FFB060BEF0BF10BEF0BED0BF70C04FDB1D02E29A9022AF80\r'
-    
+    #inc_data = b'~25014600D0F40002100DD50DBC0DD70DD70DD40DD70DD20DD50DD30DD60DC10DD40DD50DD70DD30DD5060B760B710B700B7A0B7D0B9D0000DD2326A90226AC011126AC64100DD30DBD0DD40DC60DD50DD40DD50DD50DD60DD60DD40DD20DD30\r'
+
     try:
         
         SOI = hex(ord(inc_data[0:1]))
@@ -499,7 +237,7 @@ def bms_parse_data(inc_data):
             print("INFO: ", INFO)
 
         CHKSUM = inc_data[13+LENID:13+LENID+4]
-
+        
         if debug_output > 1:
             print("CHKSUM: ", CHKSUM)
             #print("EOI: ", hex(inc_data[13+LENID+4]))
@@ -661,7 +399,6 @@ def bms_getVersion(comms):
     try:
 
         bms_version = bytes.fromhex(INFO.decode("ascii")).decode("ASCII")
-        client.publish(config['mqtt_base_topic'] + "/bms_version",bms_version)
         print("BMS Version: " + bms_version)
     except:
         return(False,"Error extracting BMS version")
@@ -681,10 +418,8 @@ def bms_getSerial(comms):
 
     try:
 
-        bms_sn = bytes.fromhex(INFO[0:30].decode("ascii")).decode("ASCII").replace(" ", "")
+        bms_sn = bytes.fromhex(INFO[0:30].decode("ascii")).decode("ASCII").replace(" ", "") #Remove spaces to prevent the unique ID having spaces
         pack_sn = bytes.fromhex(INFO[40:68].decode("ascii")).decode("ASCII").replace(" ", "")
-        client.publish(config['mqtt_base_topic'] + "/bms_sn",bms_sn)
-        client.publish(config['mqtt_base_topic'] + "/pack_sn",pack_sn)
         print("BMS Serial Number: " + bms_sn)
         print("Pack Serial Number: " + pack_sn)
 
@@ -710,7 +445,6 @@ def bms_getAnalogData(bms,batNumber):
     soh = []
 
     battery = bytes(format(batNumber, '02X'), 'ASCII')
-    # print("Get analog info for battery: ", battery)
 
     success, inc_data = bms_request(bms,cid2=constants.cid2PackAnalogData,info=battery)
 
@@ -744,7 +478,7 @@ def bms_getAnalogData(bms,batNumber):
                         return(False,"Error parsing BMS analog data: Cannot read multiple packs")
 
             if print_initial:
-                print("Pack " + str(p) + ", Total cells: " + str(cells))
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total cells: " + str(cells))
             byte_index += 2
             
             cell_min_volt = 0
@@ -753,9 +487,9 @@ def bms_getAnalogData(bms,batNumber):
             for i in range(0,cells):
                 v_cell[(p-1,i)] = int(inc_data[byte_index:byte_index+4],16)
                 byte_index += 4
-                client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/v_cells/cell_" + str(i+1) ,str(v_cell[(p-1,i)]))
+
                 if print_initial:
-                    print("Pack " + str(p) +", V Cell" + str(i+1) + ": " + str(v_cell[(p-1,i)]) + " mV")
+                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", V Cell" + str(i+1).zfill(config['zero_pad_number_cells']) + ": " + str(v_cell[(p-1,i)]) + " mV")
 
                 #Calculate cell max and min volt
                 if i == 0:
@@ -766,24 +500,24 @@ def bms_getAnalogData(bms,batNumber):
                         cell_min_volt = v_cell[(p-1,i)]
                     if v_cell[(p-1,i)] > cell_max_volt:
                         cell_max_volt = v_cell[(p-1,i)]
-           
+            
             #Calculate cells max diff volt
             cell_max_diff_volt = cell_max_volt - cell_min_volt
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/cells_max_diff_calc" ,str(cell_max_diff_volt))
+
             if print_initial:
-                print("Pack " + str(p) +", Cell Max Diff Volt Calc: " + str(cell_max_diff_volt) + " mV")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", Cell Max Diff Volt Calc: " + str(cell_max_diff_volt) + " mV")
 
             temps = int(inc_data[byte_index:byte_index + 2],16)
             if print_initial:
-                print("Pack " + str(p) + ", Total temperature sensors: " + str(temps))
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total temperature sensors: " + str(temps))
             byte_index += 2
 
             for i in range(0,temps): #temps-2
                 t_cell[(p-1,i)] = (int(inc_data[byte_index:byte_index + 4],16)-2730)/10
                 byte_index += 4
-                client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/temps/temp_" + str(i+1) ,str(round(t_cell[(p-1,i)],1)))
+
                 if print_initial:
-                    print("Pack " + str(p) + ", Temp" + str(i+1) + ": " + str(round(t_cell[(p-1,i)],1)) + " ℃")
+                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Temp" + str(i+1) + ": " + str(round(t_cell[(p-1,i)],1)) + " ℃")
 
             # t_mos= (int(inc_data[byte_index:byte_index+4],16))/160-273
             # client.publish(config['mqtt_base_topic'] + "/t_mos",str(round(t_mos,1)))
@@ -801,57 +535,70 @@ def bms_getAnalogData(bms,batNumber):
             if i_pack[p-1] >= 32768:
                 i_pack[p-1] = -1*(65535 - i_pack[p-1])
             i_pack[p-1] = i_pack[p-1]/100
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_pack",str(i_pack[p-1]))
+
             if print_initial:
-                print("Pack " + str(p) + ", I Pack: " + str(i_pack[p-1]) + " A")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Pack: " + str(i_pack[p-1]) + " A")
 
             v_pack.append(int(inc_data[byte_index:byte_index+4],16)/1000)
             byte_index += 4
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/v_pack",str(v_pack[p-1]))
+
             if print_initial:
-                print("Pack " + str(p) + ", V Pack: " + str(v_pack[p-1]) + " V")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", V Pack: " + str(v_pack[p-1]) + " V")
 
             i_remain_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_remain_cap",str(i_remain_cap[p-1]))
+
             if print_initial:
-                print("Pack " + str(p) + ", I Remaining Capacity: " + str(i_remain_cap[p-1]) + " mAh")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Remaining Capacity: " + str(i_remain_cap[p-1]) + " mAh")
 
             byte_index += 2 # Manual: Define number P = 3
 
             i_full_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_full_cap",str(i_full_cap[p-1]))
-            if print_initial:
-                print("Pack " + str(p) + ", I Full Capacity: " + str(i_full_cap[p-1]) + " mAh")
 
-            soc.append(round(i_remain_cap[p-1]/i_full_cap[p-1]*100,2))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/soc",str(soc[p-1]))
             if print_initial:
-                print("Pack " + str(p) + ", SOC: " + str(soc[p-1]) + " %")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Full Capacity: " + str(i_full_cap[p-1]) + " mAh")
+
+            try:
+                soc.append(round(i_remain_cap[p-1]/i_full_cap[p-1]*100,2))
+
+                if print_initial:
+                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOC: " + str(soc[p-1]) + " %")
+            except Exception as e:
+                print("Error parsing BMS analog data, missing pack"  + str(p).zfill(config['zero_pad_number_packs']) + " full capacity: ", str(e))
 
             cycles.append(int(inc_data[byte_index:byte_index+4],16))
             byte_index += 4
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/cycles",str(cycles[p-1]))
+
             if print_initial:
-                print("Pack " + str(p) + ", Cycles: " + str(cycles[p-1]))
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Cycles: " + str(cycles[p-1]))
 
             i_design_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/i_design_cap",str(i_design_cap[p-1]))
-            if print_initial:
-                print("Pack " + str(p) + ", Design Capacity: " + str(i_design_cap[p-1]) + " mAh")
 
-            soh.append(round(i_full_cap[p-1]/i_design_cap[p-1]*100,2))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/soh",str(soh[p-1]))
             if print_initial:
-                print("Pack " + str(p) + ", SOH: " + str(soh[p-1]) + " %")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Design Capacity: " + str(i_design_cap[p-1]) + " mAh")
 
-            byte_index += 2
+            try:
+                soh.append(round(i_full_cap[p-1]/i_design_cap[p-1]*100,2))
+
+                if print_initial:
+                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOH: " + str(soh[p-1]) + " %")
+            except Exception as e:
+                print("Error parsing BMS analog data, missing pack"  + str(p).zfill(config['zero_pad_number_packs']) + " design capacity: ", str(e))
+
+            #byte_index += 2
+
+            byte_index += int(config['force_pack_offset'])
 
             #Test for non signed value (matching cell count), to skip possible INFOFLAG present in data
-            if (byte_index < len(inc_data)) and (cells != int(inc_data[byte_index:byte_index+2],16)):
-                byte_index += 2
+            if p < packs: #Test - Is there more packs to read?
+                while (byte_index < len(inc_data)) and (cells != int(inc_data[byte_index:byte_index+2],16)):
+                    byte_index += 2
+                    if byte_index > len(inc_data):
+                        print("Error parsing BMS analog data: Cannot read multiple packs")
+                        return(False,"Error parsing BMS analog data: Cannot read multiple packs")
+
 
     except Exception as e:
         print("Error parsing BMS analog data: ", str(e))
@@ -875,29 +622,24 @@ def bms_getPackCapacity(bms):
 
         pack_remain_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        client.publish(config['mqtt_base_topic'] + "/pack_remain_cap",str(pack_remain_cap))
         if print_initial:
             print("Pack Remaining Capacity: " + str(pack_remain_cap) + " mAh")
 
         pack_full_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        client.publish(config['mqtt_base_topic'] + "/pack_full_cap",str(pack_full_cap))
         if print_initial:
             print("Pack Full Capacity: " + str(pack_full_cap) + " mAh")
 
         pack_design_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        client.publish(config['mqtt_base_topic'] + "/pack_design_cap",str(pack_design_cap))
         if print_initial:
             print("Pack Design Capacity: " + str(pack_design_cap) + " mAh")
 
         pack_soc = round(pack_remain_cap/pack_full_cap*100,2)
-        client.publish(config['mqtt_base_topic'] + "/pack_soc",str(pack_soc))
         if print_initial:
             print("Pack SOC: " + str(pack_soc) + " %")
 
         pack_soh = round(pack_full_cap/pack_design_cap*100,2)
-        client.publish(config['mqtt_base_topic'] + "/pack_soh",str(pack_soh))
         if print_initial:
             print("Pack SOH: " + str(pack_soh) + " %")
 
@@ -919,6 +661,7 @@ def bms_getWarnInfo(bms):
         return(False,inc_data)
 
     #inc_data = b'000210000000000000000000000000000000000600000000000000000000000E0000000000001110000000000000000000000000000000000600000000000000000000000E00000000000000'
+    
 
     try:
 
@@ -972,9 +715,6 @@ def bms_getWarnInfo(bms):
                         warnings += constants.protectState1[x+1] + " | "
                 warnings = warnings.rstrip("| ")
                 warnings += ", "
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_short_circuit",str(protectState1>>6 & 1))  
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_discharge_current",str(protectState1>>5 & 1))  
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/prot_charge_current",str(protectState1>>4 & 1))  
             byte_index += 2
 
             protectState2 = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -985,7 +725,6 @@ def bms_getWarnInfo(bms):
                         warnings += constants.protectState2[x+1] + " | "
                 warnings = warnings.rstrip("| ")
                 warnings += ", "
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/fully",str(protectState2>>7 & 1))  
             byte_index += 2
 
             # instructionState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -999,13 +738,13 @@ def bms_getWarnInfo(bms):
             # byte_index += 2
 
             instructionState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/current_limit",str(instructionState>>0 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/charge_fet",str(instructionState>>1 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/discharge_fet",str(instructionState>>2 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/pack_indicate",str(instructionState>>3 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/reverse",str(instructionState>>4 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/ac_in",str(instructionState>>5 & 1))
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/heart",str(instructionState>>7 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", current_limit: " + str(instructionState>>0 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", charge_fet: " + str(instructionState>>1 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", discharge_fet: " + str(instructionState>>2 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", pack_indicate: " + str(instructionState>>3 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", reverse: " + str(instructionState>>4 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", ac_in: " + str(instructionState>>5 & 1))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", heart: " + str(instructionState>>7 & 1))
             byte_index += 2
 
             controlState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -1056,17 +795,9 @@ def bms_getWarnInfo(bms):
 
             warnings = warnings.rstrip(", ")
 
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/warnings",warnings)
-            if print_initial:
-                print("Pack " + str(p) + ", warnings: " + warnings)
-
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/balancing1",balanceState1)
-            if print_initial:
-                print("Pack " + str(p) + ", balancing1: " + balanceState1)
-
-            client.publish(config['mqtt_base_topic'] + "/pack_" + str(p) + "/balancing2",balanceState2)
-            if print_initial:
-                print("Pack " + str(p) + ", balancing2: " + balanceState2)
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", warnings: " + warnings)
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", balancing1: " + balanceState1)
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", balancing2: " + balanceState2)
 
             warnings = ""
 
@@ -1080,75 +811,34 @@ def bms_getWarnInfo(bms):
 
     return True,True
 
-
 print("Connecting to BMS...")
 bms,bms_connected = bms_connect(config['bms_ip'],config['bms_port'])
-
-client.publish(config['mqtt_base_topic'] + "/availability","offline")
-print_initial = True
 
 success, data = bms_getVersion(bms)
 if success != True:
     print("Error retrieving BMS version number")
 
 time.sleep(0.1)
-success, bms_sn, pack_sn = bms_getSerial(bms)
+success, bms_sn,pack_sn = bms_getSerial(bms)
+
 if success != True:
-    print("Error retrieving BMS and pack serial numbers. This is required for HA Discovery. Exiting...")
+    print("Error retrieving BMS and pack serial numbers. Exiting...")
     quit()
 
+if bms_connected == True:
 
-# Not used anymore
-# time.sleep(0.1)
-# success, data = bms_getPackNumber(bms)
-# if success == True:
-#     print("Batteries in pack: ", data)
-# else:
-#     print("Error retrieving number of batteries in pack")
-
-while code_running == True:
-
-    if bms_connected == True:
-        if mqtt_connected == True:
-
-            success, data = bms_getAnalogData(bms,batNumber=255)
-            if success != True:
-                print("Error retrieving BMS analog data: " + data)
-            time.sleep(scan_interval/3)
-            success, data = bms_getPackCapacity(bms)
-            if success != True:
-                print("Error retrieving BMS pack capacity: " + data)
-            time.sleep(scan_interval/3)
-            success, data = bms_getWarnInfo(bms)
-            if success != True:
-                print("Error retrieving BMS warning info: " + data)
-            time.sleep(scan_interval/3)
-
-            if print_initial:
-                ha_discovery()
-                
-            client.publish(config['mqtt_base_topic'] + "/availability","online")
-
-            print_initial = False
-            
-
-            repub_discovery += 1
-            if repub_discovery*scan_interval > 3600:
-                repub_discovery = 0
-                print_initial = True
-        
-        else: #MQTT not connected
-            client.loop_stop()
-            print("MQTT disconnected, trying to reconnect...")
-            client.connect(config['mqtt_host'], config['mqtt_port'], 60)
-            client.loop_start()
-            time.sleep(5)
-            print_initial = True
-    else: #BMS not connected
-        print("BMS disconnected, trying to reconnect...")
-        bms,bms_connected = bms_connect(config['bms_ip'],config['bms_port'])
-        client.publish(config['mqtt_base_topic'] + "/availability","offline")
-        time.sleep(5)
-        print_initial = True
-
-client.loop_stop()
+        success, data = bms_getAnalogData(bms,batNumber=255)
+        if success != True:
+            print("Error retrieving BMS analog data: " + data)
+        time.sleep(scan_interval/3)
+        success, data = bms_getPackCapacity(bms)
+        if success != True:
+            print("Error retrieving BMS pack capacity: " + data)
+        time.sleep(scan_interval/3)
+        success, data = bms_getWarnInfo(bms)
+        if success != True:
+            print("Error retrieving BMS warning info: " + data)
+        time.sleep(scan_interval/3)
+       
+else: #BMS not connected
+    print("BMS disconnected...")
