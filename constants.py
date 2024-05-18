@@ -36,7 +36,7 @@ instructionState = {1: "Current limit indicate ON",
                     3: "DFET indicate ON",
                     4: "Pack indicate ON",
                     5: "Reverse indicate ON",
-                    6: "ACin ON",
+                    6: "AC in ON",
                     7: "Undefined",
                     8: "Heart indicate ON"}
 
@@ -45,7 +45,7 @@ controlState =     {1: "Buzzer warn function enabled",
                     3: "undefined",
                     4: "Current limit gear => low gear",
                     5: "Current limit function disabled",
-                    6: "LED warn functiuon disabled",
+                    6: "LED warn function disabled",
                     7: "Undefined",
                     8: "Undefined"}
 
