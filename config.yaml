@@ -1,8 +1,8 @@
-name: "BMS Pace - Development"
-description: "Pace BMS Interface"
-version: "2.3dev"
-slug: "bms_pace_dev"
-url: "https://github.com/Tertiush/bmspace/pace-bms-dev"
+name: "BMS Pace - Influx"
+description: "Pace BMS Data to Influx 1.8"
+version: "0.1dev"
+slug: "bms_pace_influx"
+url: "https://github.com/jpgnz/bmspace"
 init: false
 arch:
   - aarch64
@@ -22,8 +22,13 @@ options:
   scan_interval: 5
   debug_output: 0
   force_pack_offset: 0
-  zero_pad_number_cells: 0
+  zero_pad_number_cells: 2
   zero_pad_number_packs: 0
+  influx_host: "localhost"
+  influx_port: 8086
+  influx_username: "localhost"
+  influx_password: "localhost"
+  influx_db: "localhost"
 schema:
   connection_type: list(IP|Serial)
   bms_ip: str
@@ -34,3 +39,8 @@ schema:
   force_pack_offset: "int?"
   zero_pad_number_cells: "int?"
   zero_pad_number_packs: "int?"
+  influx_host: str
+  influx_port: int
+  influx_username: str
+  influx_password: str
+  influx_db: str

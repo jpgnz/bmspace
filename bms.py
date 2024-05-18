@@ -1,41 +1,28 @@
-
 import socket
 import time
 import yaml
 import os
-import json
 import serial
 import io
-import json
 import atexit
 import sys
 import constants
-
-print("Starting up...")
+from influxdb import InfluxDBClient
 
 config = {}
 script_version = ""
 
-if os.path.exists('/data/options.json'):
-    print("Loading options.json")
-    with open(r'/data/options.json') as file:
-        config = json.load(file)
-        print("Config: " + json.dumps(config))
-
-elif os.path.exists('config.yaml'):
-    print("Loading config.yaml")
+if os.path.exists('config.yaml'):
     with open(r'config.yaml') as file:
         config = yaml.load(file, Loader=yaml.FullLoader)['options']
-        
+
 else:
-    sys.exit("No config file found")  
+    sys.exit("No config file found")
 
 scan_interval = config['scan_interval']
 connection_type = config['connection_type']
 bms_serial = config['bms_serial']
-code_running = True
 bms_connected = False
-print_initial = True
 debug_output = config['debug_output']
 disc_payload = {}
 repub_discovery = 0
@@ -47,6 +34,7 @@ packs = 1
 cells = 13
 temps = 6
 
+influxarray = {}
 
 print("Connection Type: " + connection_type)
 
@@ -61,7 +49,7 @@ def bms_connect(address, port):
             return s, True
         except IOError as msg:
             print("BMS serial error connecting: %s" % msg)
-            return False, False    
+            return False, False
 
     else:
 
@@ -108,7 +96,7 @@ def bms_get_data(comms):
             inc_data = comms.readline()
         else:
             temp = bytes()
-            
+
             while len(temp) == 0 or temp[-1] != 13:
                 temp = temp + comms.recv(4096)
 
@@ -120,10 +108,10 @@ def bms_get_data(comms):
                     inc_data = temp2[element] + b'\r'
                     break
 
-            if (len(temp2) > 2) & (debug_output > 0):
+            #if (len(temp2) > 2) & (debug_output > 0):
                 print("Multiple EOIs detected")
                 print("...for incoming data: " + str(temp) + " |Hex: " + str(temp.hex(' ')))
-                
+
         return inc_data
     except Exception as e:
         print("BMS socket receive error: %s" % e)
@@ -139,11 +127,11 @@ def chksum_calc(data):
 
         for element in range(1, len(data)): #-5):
             chksum += (data[element])
-        
+
         chksum = chksum % 65536
         chksum = '{0:016b}'.format(chksum)
-    
-        flip_bits = '' 
+
+        flip_bits = ''
         for i in chksum:
             if i == '0':
                 flip_bits += '1'
@@ -189,10 +177,8 @@ def bms_parse_data(inc_data):
 
     global debug_output
 
-    #inc_data = b'~25014600D0F40002100DD50DBC0DD70DD70DD40DD70DD20DD50DD30DD60DC10DD40DD50DD70DD30DD5060B760B710B700B7A0B7D0B9D0000DD2326A90226AC011126AC64100DD30DBD0DD40DC60DD50DD40DD50DD50DD60DD60DD40DD20DD30\r'
-
     try:
-        
+
         SOI = hex(ord(inc_data[0:1]))
         if SOI != '0x7e':
             return(False,"Incorrect starting byte for incoming data")
@@ -208,7 +194,7 @@ def bms_parse_data(inc_data):
         if error:
             print(error)
             raise Exception(error)
-        
+
         LCHKSUM = inc_data[9]
 
         if debug_output > 1:
@@ -237,7 +223,7 @@ def bms_parse_data(inc_data):
             print("INFO: ", INFO)
 
         CHKSUM = inc_data[13+LENID:13+LENID+4]
-        
+
         if debug_output > 1:
             print("CHKSUM: ", CHKSUM)
             #print("EOI: ", hex(inc_data[13+LENID+4]))
@@ -286,14 +272,14 @@ def lchksum_calc(lenid):
 
         # for element in range(1, len(lenid)): #-5):
         #     chksum += (lenid[element])
-        
+
         for element in range(0, len(lenid)):
             chksum += int(chr(lenid[element]),16)
 
         chksum = chksum % 16
         chksum = '{0:04b}'.format(chksum)
 
-        flip_bits = '' 
+        flip_bits = ''
         for i in chksum:
             if i == '0':
                 flip_bits += '1'
@@ -321,7 +307,7 @@ def bms_request(bms, ver=b"\x32\x35",adr=b"\x30\x31",cid1=b"\x34\x36",cid2=b"\x4
 
     global bms_connected
     global debug_output
-    
+
     request = b'\x7e'
     request += ver
     request += adr
@@ -377,7 +363,7 @@ def bms_getPackNumber(bms):
     success, INFO = bms_request(bms,cid2=constants.cid2PackNumber)
 
     if success == False:
-        return(False,INFO)    
+        return(False,INFO)
 
     try:
         packNumber = int(INFO,16)
@@ -430,10 +416,10 @@ def bms_getSerial(comms):
 
 def bms_getAnalogData(bms,batNumber):
 
-    global print_initial
     global cells
     global temps
     global packs
+    global influxarray
     byte_index = 2
     i_pack = []
     v_pack = []
@@ -454,8 +440,7 @@ def bms_getAnalogData(bms,batNumber):
     try:
 
         packs = int(inc_data[byte_index:byte_index+2],16)
-        if print_initial:
-            print("Packs: " + str(packs))
+        print("Packs: " + str(packs))
         byte_index += 2
 
         v_cell = {}
@@ -477,19 +462,19 @@ def bms_getAnalogData(bms,batNumber):
                         print("Error parsing BMS analog data: Cannot read multiple packs")
                         return(False,"Error parsing BMS analog data: Cannot read multiple packs")
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total cells: " + str(cells))
-            byte_index += 2
             
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total cells: " + str(cells))
+            influxarray[str(p)] = "total_cells=" + str(cells) + ","
+            byte_index += 2
+
             cell_min_volt = 0
             cell_max_volt = 0
 
             for i in range(0,cells):
                 v_cell[(p-1,i)] = int(inc_data[byte_index:byte_index+4],16)
-                byte_index += 4
-
-                if print_initial:
-                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", V Cell" + str(i+1).zfill(config['zero_pad_number_cells']) + ": " + str(v_cell[(p-1,i)]) + " mV")
+                byte_index += 4            
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", V Cell" + str(i+1).zfill(config['zero_pad_number_cells']) + ": " + str(v_cell[(p-1,i)]) + " mV")
+                influxarray[str(p)] += "cell_" + str(i+1).zfill(config['zero_pad_number_cells']) + "=" + str(v_cell[(p-1,i)]) + ","
 
                 #Calculate cell max and min volt
                 if i == 0:
@@ -500,34 +485,34 @@ def bms_getAnalogData(bms,batNumber):
                         cell_min_volt = v_cell[(p-1,i)]
                     if v_cell[(p-1,i)] > cell_max_volt:
                         cell_max_volt = v_cell[(p-1,i)]
-            
+
             #Calculate cells max diff volt
             cell_max_diff_volt = cell_max_volt - cell_min_volt
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", Cell Max Diff Volt Calc: " + str(cell_max_diff_volt) + " mV")
+            
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", Cell Max Diff Volt Calc: " + str(cell_max_diff_volt) + " mV")
+            influxarray[str(p)] += "cell_max_diff_volt=" + str(cell_max_diff_volt) + ","
 
             temps = int(inc_data[byte_index:byte_index + 2],16)
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total temperature sensors: " + str(temps))
+            
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Total temperature sensors: " + str(temps))
             byte_index += 2
 
             for i in range(0,temps): #temps-2
                 t_cell[(p-1,i)] = (int(inc_data[byte_index:byte_index + 4],16)-2730)/10
                 byte_index += 4
-
-                if print_initial:
-                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Temp" + str(i+1) + ": " + str(round(t_cell[(p-1,i)],1)) + " ℃")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Temp" + str(i+1) + ": " + str(round(t_cell[(p-1,i)],1)) + " ℃")
+                influxarray[str(p)] += "temp_" + str(i+1) + "=" + str(round(t_cell[(p-1,i)],1)) + ","
 
             # t_mos= (int(inc_data[byte_index:byte_index+4],16))/160-273
             # client.publish(config['mqtt_base_topic'] + "/t_mos",str(round(t_mos,1)))
-            # if print_initial:
+            # 
             #     print("T Mos: " + str(t_mos) + " Deg")
 
             # t_env= (int(inc_data[byte_index:byte_index+4],16))/160-273
             # client.publish(config['mqtt_base_topic'] + "/t_env",str(round(t_env,1)))
             # offset += 7
-            # if print_initial:
+            # 
             #     print("T Env: " + str(t_env) + " Deg")
 
             i_pack.append(int(inc_data[byte_index:byte_index+4],16))
@@ -536,54 +521,53 @@ def bms_getAnalogData(bms,batNumber):
                 i_pack[p-1] = -1*(65535 - i_pack[p-1])
             i_pack[p-1] = i_pack[p-1]/100
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Pack: " + str(i_pack[p-1]) + " A")
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Pack: " + str(i_pack[p-1]) + " A")
+            influxarray[str(p)] += "current=" + str(i_pack[p-1]) + ","
 
             v_pack.append(int(inc_data[byte_index:byte_index+4],16)/1000)
             byte_index += 4
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", V Pack: " + str(v_pack[p-1]) + " V")
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", V Pack: " + str(v_pack[p-1]) + " V")
+            influxarray[str(p)] += "voltage=" + str(v_pack[p-1]) + ","
 
             i_remain_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Remaining Capacity: " + str(i_remain_cap[p-1]) + " mAh")
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Remaining Capacity: " + str(i_remain_cap[p-1]) + " mAh")
+            influxarray[str(p)] += "mah_remaining=" + str(i_remain_cap[p-1]) + ","
 
             byte_index += 2 # Manual: Define number P = 3
 
             i_full_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
 
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Full Capacity: " + str(i_full_cap[p-1]) + " mAh")
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", I Full Capacity: " + str(i_full_cap[p-1]) + " mAh")
+            influxarray[str(p)] += "mah_capacity=" + str(i_full_cap[p-1]) + ","
 
             try:
                 soc.append(round(i_remain_cap[p-1]/i_full_cap[p-1]*100,2))
 
-                if print_initial:
-                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOC: " + str(soc[p-1]) + " %")
+                
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOC: " + str(soc[p-1]) + " %")
+                influxarray[str(p)] += "soc=" + str(soc[p-1]) + ","
             except Exception as e:
                 print("Error parsing BMS analog data, missing pack"  + str(p).zfill(config['zero_pad_number_packs']) + " full capacity: ", str(e))
 
             cycles.append(int(inc_data[byte_index:byte_index+4],16))
             byte_index += 4
-
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Cycles: " + str(cycles[p-1]))
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Cycles: " + str(cycles[p-1]))
+            influxarray[str(p)] += "cycles=" + str(cycles[p-1]) + ","
 
             i_design_cap.append(int(inc_data[byte_index:byte_index+4],16)*10)
             byte_index += 4
-
-            if print_initial:
-                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Design Capacity: " + str(i_design_cap[p-1]) + " mAh")
+            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", Design Capacity: " + str(i_design_cap[p-1]) + " mAh")
+            influxarray[str(p)] += "mah_design_capacity=" + str(i_design_cap[p-1]) + ","
 
             try:
                 soh.append(round(i_full_cap[p-1]/i_design_cap[p-1]*100,2))
 
-                if print_initial:
-                    print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOH: " + str(soh[p-1]) + " %")
+                print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", SOH: " + str(soh[p-1]) + " %")
+                influxarray[str(p)] += "soh=" + str(soh[p-1]) + ","
             except Exception as e:
                 print("Error parsing BMS analog data, missing pack"  + str(p).zfill(config['zero_pad_number_packs']) + " design capacity: ", str(e))
 
@@ -604,9 +588,6 @@ def bms_getAnalogData(bms,batNumber):
         print("Error parsing BMS analog data: ", str(e))
         return(False,"Error parsing BMS analog data: " + str(e))
 
-    if print_initial:
-        print("Script running....")
-
     return True,True
 
 def bms_getPackCapacity(bms):
@@ -622,26 +603,21 @@ def bms_getPackCapacity(bms):
 
         pack_remain_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        if print_initial:
-            print("Pack Remaining Capacity: " + str(pack_remain_cap) + " mAh")
+        print("Pack Remaining Capacity: " + str(pack_remain_cap) + " mAh")
 
         pack_full_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        if print_initial:
-            print("Pack Full Capacity: " + str(pack_full_cap) + " mAh")
+        print("Pack Full Capacity: " + str(pack_full_cap) + " mAh")
 
         pack_design_cap = int(inc_data[byte_index:byte_index+4],16)*10
         byte_index += 4
-        if print_initial:
-            print("Pack Design Capacity: " + str(pack_design_cap) + " mAh")
+        print("Pack Design Capacity: " + str(pack_design_cap) + " mAh")
 
         pack_soc = round(pack_remain_cap/pack_full_cap*100,2)
-        if print_initial:
-            print("Pack SOC: " + str(pack_soc) + " %")
+        print("Pack SOC: " + str(pack_soc) + " %")
 
         pack_soh = round(pack_full_cap/pack_design_cap*100,2)
-        if print_initial:
-            print("Pack SOH: " + str(pack_soh) + " %")
+        print("Pack SOH: " + str(pack_soh) + " %")
 
     except Exception as e:
         print("Error parsing BMS pack capacity data: ", str(e))
@@ -651,6 +627,7 @@ def bms_getPackCapacity(bms):
 
 def bms_getWarnInfo(bms):
 
+    global influxarray
     byte_index = 2
     packsW = 1
     warnings = ""
@@ -659,15 +636,10 @@ def bms_getWarnInfo(bms):
 
     if success == False:
         return(False,inc_data)
-
-    #inc_data = b'000210000000000000000000000000000000000600000000000000000000000E0000000000001110000000000000000000000000000000000600000000000000000000000E00000000000000'
-    
-
     try:
 
         packsW = int(inc_data[byte_index:byte_index+2],16)
-        if print_initial:
-            print("Packs for warnings: " + str(packs))
+        print("Packs for warnings: " + str(packs))
         byte_index += 2
 
         for p in range(1,packs+1):
@@ -684,7 +656,7 @@ def bms_getWarnInfo(bms):
 
             tempsW = int(inc_data[byte_index:byte_index+2],16)
             byte_index += 2
-        
+
             for t in range(1,tempsW+1):
 
                 if inc_data[byte_index:byte_index+2] != b'00':
@@ -727,24 +699,14 @@ def bms_getWarnInfo(bms):
                 warnings += ", "
             byte_index += 2
 
-            # instructionState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
-            # if instructionState > 0:
-            #     warnings += "Instruction State: "
-            #     for x in range(0,8):
-            #         if (instructionState & (1<<x)):
-            #              warnings += constants.instructionState[x+1] + " | "
-            #     warnings = warnings.rstrip("| ")
-            #     warnings += ", "  
-            # byte_index += 2
-
             instructionState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", current_limit: " + str(instructionState>>0 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", charge_fet: " + str(instructionState>>1 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", discharge_fet: " + str(instructionState>>2 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", pack_indicate: " + str(instructionState>>3 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", reverse: " + str(instructionState>>4 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", ac_in: " + str(instructionState>>5 & 1))
-            print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", heart: " + str(instructionState>>7 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", current_limit: " + str(instructionState>>0 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", charge_fet: " + str(instructionState>>1 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", discharge_fet: " + str(instructionState>>2 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", pack_indicate: " + str(instructionState>>3 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", reverse: " + str(instructionState>>4 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", ac_in: " + str(instructionState>>5 & 1))
+            #print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", heart: " + str(instructionState>>7 & 1))
             byte_index += 2
 
             controlState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -754,7 +716,7 @@ def bms_getWarnInfo(bms):
                     if (controlState & (1<<x)):
                         warnings += constants.controlState[x+1] + " | "
                 warnings = warnings.rstrip("| ")
-                warnings += ", "  
+                warnings += ", "
             byte_index += 2
 
             faultState = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -764,7 +726,7 @@ def bms_getWarnInfo(bms):
                     if (faultState & (1<<x)):
                         warnings += constants.faultState[x+1] + " | "
                 warnings = warnings.rstrip("| ")
-                warnings += ", "  
+                warnings += ", "
             byte_index += 2
 
             balanceState1 = '{0:08b}'.format(int(inc_data[byte_index:byte_index+2],16))
@@ -780,7 +742,7 @@ def bms_getWarnInfo(bms):
                     if (warnState1 & (1<<x)):
                         warnings += constants.warnState1[x+1] + " | "
                 warnings = warnings.rstrip("| ")
-                warnings += ", "  
+                warnings += ", "
             byte_index += 2
 
             warnState2 = ord(bytes.fromhex(inc_data[byte_index:byte_index+2].decode('ascii')))
@@ -790,7 +752,7 @@ def bms_getWarnInfo(bms):
                     if (warnState2 & (1<<x)):
                         warnings += constants.warnState2[x+1] + " | "
                 warnings = warnings.rstrip("| ")
-                warnings += ", "  
+                warnings += ", "
             byte_index += 2
 
             warnings = warnings.rstrip(", ")
@@ -798,6 +760,10 @@ def bms_getWarnInfo(bms):
             print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", warnings: " + warnings)
             print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", balancing1: " + balanceState1)
             print("Pack " + str(p).zfill(config['zero_pad_number_packs']) + ", balancing2: " + balanceState2)
+
+            influxarray[str(p)] += "warnings=\"" + warnings + "\","
+            influxarray[str(p)] += "balancing1=\"" + balanceState1 + "\","
+            influxarray[str(p)] += "balancing2=\"" + balanceState2 + "\","
 
             warnings = ""
 
@@ -831,14 +797,36 @@ if bms_connected == True:
         if success != True:
             print("Error retrieving BMS analog data: " + data)
         time.sleep(scan_interval/3)
-        success, data = bms_getPackCapacity(bms)
-        if success != True:
-            print("Error retrieving BMS pack capacity: " + data)
-        time.sleep(scan_interval/3)
+        #success, data = bms_getPackCapacity(bms)
+        #if success != True:
+        #    print("Error retrieving BMS pack capacity: " + data)
+        #time.sleep(scan_interval/3)
         success, data = bms_getWarnInfo(bms)
         if success != True:
             print("Error retrieving BMS warning info: " + data)
         time.sleep(scan_interval/3)
-       
+
 else: #BMS not connected
     print("BMS disconnected...")
+
+influx_host = config['influx_host']
+influx_port = config['influx_port']
+influx_username = config['influx_username']
+influx_password = config['influx_password']
+influx_db = config['influx_db']
+
+influxdbclient = InfluxDBClient(host=influx_host, port=influx_port, username=influx_username, password=influx_password, database=influx_db)
+
+print("Writing to InfluxDB...")
+
+for pack_id, data in influxarray.items():
+    # Remove the trailing comma from the data string
+    cleaned_data = data.strip(',')
+    # Create the line protocol format
+    line = f"battery_pack,pack_id={pack_id} {cleaned_data}"
+    # Write to influxDB
+    influxdbclient.write_points(line, protocol='line')
+    #print(line)
+
+# Close the client
+influxdbclient.close()
