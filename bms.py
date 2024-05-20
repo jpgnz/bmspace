@@ -7,7 +7,10 @@ import io
 import atexit
 import sys
 import constants
+import datetime
 from influxdb import InfluxDBClient
+
+print("START: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
 config = {}
 script_version = ""
@@ -472,7 +475,12 @@ def bms_getAnalogData(bms,batNumber):
 
             for i in range(0,cells):
                 v_cell[(p-1,i)] = int(inc_data[byte_index:byte_index+4],16)
-                byte_index += 4            
+
+                #Adding this because otherwise weird stuff happens
+                if v_cell[(p-1, i)] > 5000:
+                    sys.exit("Exiting script because the value is greater than 5000")
+
+                byte_index += 4
                 print("Pack " + str(p).zfill(config['zero_pad_number_packs']) +", V Cell" + str(i+1).zfill(config['zero_pad_number_cells']) + ": " + str(v_cell[(p-1,i)]) + " mV")
                 influxarray[str(p)] += "cell_" + str(i+1).zfill(config['zero_pad_number_cells']) + "=" + str(v_cell[(p-1,i)]) + ","
 
@@ -830,3 +838,4 @@ for pack_id, data in influxarray.items():
 
 # Close the client
 influxdbclient.close()
+print("ENDDD: " + datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
